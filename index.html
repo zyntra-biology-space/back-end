@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>NASA Article Mindmap</title>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+
+      async function loadMindmap() {
+        // ✅ مثال ثابت شغال
+        const mindmapCode = `
+mindmap
+  root(("Microgravity Induces Pelvic Bone Loss"))
+    Publisher "Blaber Elizabeth A."
+    Introduction "On Earth, mechanical loading of tissues..."
+    Methods "All animal procedures approved..."
+    Results "Body mass of animals pre- and post-flight..."
+    Discussion "We investigated cellular and molecular..."
+    Conclusion "Findings demonstrate pelvic bone loss..."
+    Significant "Microgravity induced significant bone loss"
+    Summary "This study investigated the mechanisms..."
+    Figures
+      "Figure 1: µCT Analysis"
+      "Figure 2: TRAP Staining"
+    Tables
+      "Table 1: Morphometric Parameters"
+      "Table 2: Gene Expression Levels"
+        `;
+
+        const container = document.getElementById("mindmap");
+        container.innerHTML = "";
+
+        const chart = document.createElement("div");
+        chart.className = "mermaid";
+        chart.textContent = mindmapCode;
+
+        container.appendChild(chart);
+
+        mermaid.initialize({ startOnLoad: false });
+        await mermaid.run();
+      }
+
+      window.onload = loadMindmap;
+    </script>
+  </head>
+  <body>
+    <h2>🧠 NASA Article Mindmap</h2>
+    <div id="mindmap"></div>
+  </body>
+</html>
