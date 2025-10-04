@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import google.generativeai as genai
 from fastapi import Query
 from pymongo import DESCENDING
+
 # ===== إعداد Logging =====
 logging.basicConfig(
     level=logging.DEBUG,  # DEBUG = كل التفاصيل
@@ -21,7 +22,9 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="🚀 NASA Papers Q&A API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ممكن تحدد ["http://localhost:5500"] بدل * لو بتفتح من لايف سيرفر
+    allow_origins=[
+        "*"
+    ],  # ممكن تحدد ["http://localhost:5500"] بدل * لو بتفتح من لايف سيرفر
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -30,15 +33,19 @@ app.add_middleware(
 # ===== MongoDB =====
 MONGO_URI = os.getenv(
     "MONGO_URI",
-    "mongodb+srv://infocodivera_db_user:m6Uwjdv2f53imWeJ@cluster0.ldqe96m.mongodb.net/?retryWrites=true&w=majority"
+    "mongodb+srv://infocodivera_db_user:m6Uwjdv2f53imWeJ@cluster0.ldqe96m.mongodb.net/?retryWrites=true&w=majority",
 )
 logger.info(f"Connecting to MongoDB: {MONGO_URI}")
-client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
+client = MongoClient(
+    MONGO_URI, tls=True, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=60000
+)
 db = client["nasa_papers"]
 collection = db["articles"]
 
 # ===== Pinecone =====
-PINECONE_API_KEY = "pcsk_RT6wY_N5JbiUjPaTaLDaxXepgh7uPXpKj7wmiJVAjARHPc2HzDodSnPRKTRRZpCyEoKzh"
+PINECONE_API_KEY = (
+    "pcsk_RT6wY_N5JbiUjPaTaLDaxXepgh7uPXpKj7wmiJVAjARHPc2HzDodSnPRKTRRZpCyEoKzh"
+)
 INDEX_NAME = "nasa-articles-chunks"
 
 logger.info("Connecting to Pinecone...")
@@ -52,7 +59,7 @@ if INDEX_NAME not in existing_indexes:
         name=INDEX_NAME,
         dimension=384,
         metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1")
+        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
     )
 
 index = pc.Index(INDEX_NAME)
@@ -65,15 +72,18 @@ embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 genai.configure(api_key="AIzaSyC7qMkLOLrCpaV6-XrdZWcvmOs4ugF3xFc")
 gemini_model = genai.GenerativeModel("gemini-2.5-flash")
 
+
 # ===== Models =====
 class SearchRequest(BaseModel):
     query: str
     top_k: int = 3
 
+
 # ===== Routes =====
 @app.get("/")
 def home():
     return {"message": "🚀 NASA Papers Q&A API running"}
+
 
 @app.post("/ask")
 def ask_question(req: SearchRequest):
@@ -97,21 +107,27 @@ def ask_question(req: SearchRequest):
         title = meta.get("title")
         link = meta.get("link")
 
-        logger.debug(f"Found match: pmc_id={pmc_id}, title={title}, score={match['score']}")
+        logger.debug(
+            f"Found match: pmc_id={pmc_id}, title={title}, score={match['score']}"
+        )
 
         doc = collection.find_one({"pmc_id": pmc_id})
         if doc:
             logger.debug(f"Document found in Mongo for {pmc_id}")
-            docs.append(doc.get("abstract", "")[:1500])  # خذ abstract أو content لو عندك
+            docs.append(
+                doc.get("abstract", "")[:1500]
+            )  # خذ abstract أو content لو عندك
         else:
             logger.warning(f"No Mongo document found for pmc_id={pmc_id}")
 
-        sources.append({
-            "pmc_id": pmc_id,
-            "title": title,
-            "link": link,
-            "section": meta.get("section")
-        })
+        sources.append(
+            {
+                "pmc_id": pmc_id,
+                "title": title,
+                "link": link,
+                "section": meta.get("section"),
+            }
+        )
 
     if not docs:
         logger.error("No documents found after matching")
@@ -135,11 +151,9 @@ Answer:"""
     answer_text = response.text if hasattr(response, "text") else str(response)
     logger.debug(f"Gemini response: {answer_text[:300]}...")  # عرض أول 300 حرف بس
 
-    return {
-        "query": query,
-        "answer": answer_text,
-        "sources": sources
-    }
+    return {"query": query, "answer": answer_text, "sources": sources}
+
+
 @app.get("/articles/{pmc_id}")
 def get_article_by_id(pmc_id: str):
     logger.debug(f"Fetching article with pmc_id={pmc_id}")
@@ -161,29 +175,35 @@ def get_article_by_id(pmc_id: str):
     # تحويل ObjectId عشان يتسيريالاين كويس
     doc["_id"] = str(doc["_id"])
     return doc
+
+
 @app.get("/articles")
-def get_all_articles(
-    page: int = Query(1, ge=1),
-    limit: int = Query(10, ge=1, le=100)
-):
+def get_all_articles(page: int = Query(1, ge=1), limit: int = Query(10, ge=1, le=100)):
     logger.debug(f"Fetching articles page={page}, limit={limit}")
 
     skip = (page - 1) * limit
 
-    cursor = collection.find(
-        {},
-        {"pmc_id": 1, "summary": 1, "title": 1, "published_date": 1, "authors": 1}
-    ).sort("published_date", DESCENDING).skip(skip).limit(limit)
+    cursor = (
+        collection.find(
+            {},
+            {"pmc_id": 1, "summary": 1, "title": 1, "published_date": 1, "authors": 1},
+        )
+        .sort("published_date", DESCENDING)
+        .skip(skip)
+        .limit(limit)
+    )
 
     articles = []
     for doc in cursor:
-        articles.append({
-            "pmc_id": str(doc["pmc_id"]),
-            "summary": doc.get("summary", ""),
-            "title": doc.get("title", ""),
-            "published_date": doc.get("published_date", ""),
-            "publisher": doc.get("authors", [None])[0]  # أول author
-        })
+        articles.append(
+            {
+                "pmc_id": str(doc["pmc_id"]),
+                "summary": doc.get("summary", ""),
+                "title": doc.get("title", ""),
+                "published_date": doc.get("published_date", ""),
+                "publisher": doc.get("authors", [None])[0],  # أول author
+            }
+        )
 
     total_count = collection.count_documents({})
     total_pages = (total_count + limit - 1) // limit
@@ -193,8 +213,10 @@ def get_all_articles(
         "limit": limit,
         "total_pages": total_pages,
         "total_count": total_count,
-        "articles": articles
+        "articles": articles,
     }
+
+
 def build_article_mindmap(doc):
     title = doc.get("title", "Untitled")
     publisher = doc.get("authors", ["Unknown"])[0]
@@ -219,6 +241,8 @@ def build_article_mindmap(doc):
         mindmap += f'      "Table {i}: {tbl.get("text","")[:60]}..."\n'
 
     return mindmap
+
+
 @app.get("/articles/{pmc_id}/mindmap")
 def get_article_mindmap(pmc_id: str):
     doc = collection.find_one({"pmc_id": pmc_id})
