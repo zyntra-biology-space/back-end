@@ -1,1 +1,12 @@
 fly.toml
+FROM python:3
+
+WORKDIR /
+
+COPY ./
+
+WORKDIR ./
+
+EXPOSE 8080
+
+CMD [ "python", "./server.py" ]
