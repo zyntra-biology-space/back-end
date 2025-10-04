@@ -22,4 +22,4 @@ ENV GENAI_API_KEY="AIzaSyC7qMkLOLrCpaV6-XrdZWcvmOs4ugF3xFc"
 EXPOSE 8080
 
 # الأمر الافتراضي لتشغيل التطبيق باستخدام uvicorn
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "server:app", "--host", "127.0.0.1", "--port", "8080"]
