@@ -1,0 +1,8 @@
+fastapi
+pydantic
+pymongo
+sentence-transformers
+pinecone-client
+certifi
+uvicorn[standard]
+google-generativeai
