@@ -170,7 +170,7 @@ def get_article_by_id(pmc_id: str):
 
     if not doc:
         logger.warning(f"No article found for pmc_id={pmc_id}")
-        raise HTTPException(status_code=404, detail="Article not found")
+        raise HTTPException(status_code=403, detail="Article not found")
 
     # تحويل ObjectId عشان يتسيريالاين كويس
     doc["_id"] = str(doc["_id"])
