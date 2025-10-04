@@ -1,9 +1,9 @@
-# fly.toml app configuration file generated for back-end-snowy-brook-7929 on 2025-10-04T03:42:33Z
+# fly.toml app configuration file generated for lo15ol on 2025-10-04T03:53:19Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'back-end-snowy-brook-7929'
+app = 'lo15ol'
 primary_region = 'fra'
 
 [build]
