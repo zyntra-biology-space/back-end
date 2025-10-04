@@ -1,4 +1,4 @@
-# fly.toml app configuration file generated for back-end-snowy-brook-7929 on 2025-10-04T05:12:15+03:00
+# fly.toml app configuration file generated for back-end-snowy-brook-7929 on 2025-10-04T03:42:33Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
@@ -20,3 +20,4 @@ primary_region = 'fra'
   memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
+  memory_mb = 1024
