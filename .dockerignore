@@ -9,4 +9,4 @@ WORKDIR ./
 
 EXPOSE 8080
 
-CMD [ "python", "./server.py" ]
+CMD [ "uvicorn", "server:app" ]
