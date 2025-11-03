@@ -256,3 +256,9 @@ def get_article_mindmap(pmc_id: str):
     if not doc:
         raise HTTPException(status_code=404, detail="Article not found")
     return {"mindmap": build_article_mindmap(doc)}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(host="0.0.0.0", port=8000)
