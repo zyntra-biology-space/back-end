@@ -258,7 +258,7 @@ def get_article_mindmap(pmc_id: str):
     return {"mindmap": build_article_mindmap(doc)}
 
 
-if __name__ == "__main__":
-    import uvicorn
+# if __name__ == "__main__":
+#     import uvicorn
 
-    uvicorn.run(host="0.0.0.0", port=8000)
+#     uvicorn.run(host="0.0.0.0", port=8000)
