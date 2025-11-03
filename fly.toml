@@ -1,15 +1,15 @@
-# fly.toml app configuration file generated for lo15ol on 2025-10-04T03:53:19Z
+# fly.toml app configuration file generated for nasa-fly on 2025-11-03T16:23:28Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'lo15ol'
+app = 'nasa-fly'
 primary_region = 'fra'
 
 [build]
 
 [http_service]
-  internal_port = 8080
+  internal_port = 8000
   force_https = true
   auto_stop_machines = 'stop'
   auto_start_machines = true
