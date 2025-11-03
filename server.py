@@ -7,16 +7,21 @@ from pinecone import Pinecone, ServerlessSpec
 import certifi
 import os
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 import google.generativeai as genai
 from fastapi import Query
 from pymongo import DESCENDING
 
 # ===== إعداد Logging =====
-logging.basicConfig(
-    level=logging.DEBUG,  # DEBUG = كل التفاصيل
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
+# logging.basicConfig(
+#     level=logging.DEBUG,  # DEBUG = كل التفاصيل
+#     format="%(asctime)s [%(levelname)s] %(message)s",
+# )
+
 logger = logging.getLogger(__name__)
+
+# Load environment variables from .env if present
+load_dotenv()
 
 # ===== إعداد FastAPI =====
 app = FastAPI(title="🚀 NASA Papers Q&A API")
@@ -31,11 +36,10 @@ app.add_middleware(
 )
 
 # ===== MongoDB =====
-MONGO_URI = os.getenv(
-    "MONGO_URI",
-    "mongodb+srv://infocodivera_db_user:m6Uwjdv2f53imWeJ@cluster0.ldqe96m.mongodb.net/?retryWrites=true&w=majority",
-)
-logger.info(f"Connecting to MongoDB: {MONGO_URI}")
+MONGO_URI = os.getenv("MONGO_URI")
+if not MONGO_URI:
+    raise RuntimeError("MONGO_URI environment variable is not set")
+# logger.info(f"Connecting to MongoDB: {MONGO_URI}")
 client = MongoClient(
     MONGO_URI, tls=True, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=60000
 )
@@ -43,15 +47,15 @@ db = client["nasa_papers"]
 collection = db["articles"]
 
 # ===== Pinecone =====
-PINECONE_API_KEY = (
-    "pcsk_RT6wY_N5JbiUjPaTaLDaxXepgh7uPXpKj7wmiJVAjARHPc2HzDodSnPRKTRRZpCyEoKzh"
-)
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+if not PINECONE_API_KEY:
+    raise RuntimeError("PINECONE_API_KEY environment variable is not set")
 INDEX_NAME = "nasa-articles-chunks"
 
-logger.info("Connecting to Pinecone...")
+# logger.info("Connecting to Pinecone...")
 pc = Pinecone(api_key=PINECONE_API_KEY)
 existing_indexes = [idx["name"] for idx in pc.list_indexes()]
-logger.info(f"Existing Pinecone indexes: {existing_indexes}")
+# logger.info(f"Existing Pinecone indexes: {existing_indexes}")
 
 if INDEX_NAME not in existing_indexes:
     logger.warning(f"Index {INDEX_NAME} not found. Creating it...")
@@ -65,11 +69,14 @@ if INDEX_NAME not in existing_indexes:
 index = pc.Index(INDEX_NAME)
 
 # ===== Embedding model =====
-logger.info("Loading embedding model all-MiniLM-L6-v2...")
+# logger.info("Loading embedding model all-MiniLM-L6-v2...")
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 # ===== Gemini =====
-genai.configure(api_key="AIzaSyC7qMkLOLrCpaV6-XrdZWcvmOs4ugF3xFc")
+GENAI_API_KEY = os.getenv("GENAI_API_KEY")
+if not GENAI_API_KEY:
+    raise RuntimeError("GENAI_API_KEY environment variable is not set")
+genai.configure(api_key=GENAI_API_KEY)
 gemini_model = genai.GenerativeModel("gemini-2.5-flash")
 
 
@@ -88,15 +95,15 @@ def home():
 @app.post("/ask")
 def ask_question(req: SearchRequest):
     query = req.query
-    logger.debug(f"Received query: {query}")
+    # logger.debug(f"Received query: {query}")
 
     # ===== Embedding =====
     vector = embedding_model.encode(query).tolist()
-    logger.debug(f"Generated embedding length: {len(vector)}")
+    # logger.debug(f"Generated embedding length: {len(vector)}")
 
     # ===== Pinecone search =====
     results = index.query(vector=vector, top_k=req.top_k, include_metadata=True)
-    logger.debug(f"Pinecone results: {results}")
+    # logger.debug(f"Pinecone results: {results}")
 
     docs = []
     sources = []
@@ -107,13 +114,13 @@ def ask_question(req: SearchRequest):
         title = meta.get("title")
         link = meta.get("link")
 
-        logger.debug(
-            f"Found match: pmc_id={pmc_id}, title={title}, score={match['score']}"
-        )
+        # logger.debug(
+        #     f"Found match: pmc_id={pmc_id}, title={title}, score={match['score']}"
+        # )
 
         doc = collection.find_one({"pmc_id": pmc_id})
         if doc:
-            logger.debug(f"Document found in Mongo for {pmc_id}")
+            # logger.debug(f"Document found in Mongo for {pmc_id}")
             docs.append(
                 doc.get("abstract", "")[:1500]
             )  # خذ abstract أو content لو عندك
@@ -135,7 +142,7 @@ def ask_question(req: SearchRequest):
 
     # ===== Context =====
     context_text = "\n\n".join(docs)
-    logger.debug(f"Context text length: {len(context_text)}")
+    # logger.debug(f"Context text length: {len(context_text)}")
 
     # ===== Send to Gemini =====
     prompt = f"""Answer the following question using the context below. 
@@ -149,14 +156,14 @@ Answer:"""
 
     response = gemini_model.generate_content(prompt)
     answer_text = response.text if hasattr(response, "text") else str(response)
-    logger.debug(f"Gemini response: {answer_text[:300]}...")  # عرض أول 300 حرف بس
+    # logger.debug(f"Gemini response: {answer_text[:300]}...")  # عرض أول 300 حرف بس
 
     return {"query": query, "answer": answer_text, "sources": sources}
 
 
 @app.get("/articles/{pmc_id}")
 def get_article_by_id(pmc_id: str):
-    logger.debug(f"Fetching article with pmc_id={pmc_id}")
+    # logger.debug(f"Fetching article with pmc_id={pmc_id}")
 
     # لو عايز تدور بالـ pmc_id (string field عندك في الكولكشن)
     doc = collection.find_one({"pmc_id": pmc_id})
@@ -179,7 +186,7 @@ def get_article_by_id(pmc_id: str):
 
 @app.get("/articles")
 def get_all_articles(page: int = Query(1, ge=1), limit: int = Query(10, ge=1, le=100)):
-    logger.debug(f"Fetching articles page={page}, limit={limit}")
+    # logger.debug(f"Fetching articles page={page}, limit={limit}")
 
     skip = (page - 1) * limit
 
