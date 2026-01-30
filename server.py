@@ -1,61 +1,83 @@
+"""
+🚀 NASA Research Papers API - Combined Version
+Combines:
+- RAG-based Q&A (semantic search + Gemini) from nasa_qa_api
+- Rich Mindmap generation from improved_mindmap_api
+- Article management and search
+"""
+
 import logging
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from pymongo import MongoClient
-from sentence_transformers import SentenceTransformer
-from pinecone import Pinecone, ServerlessSpec
+import json
 import certifi
 import os
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from pymongo import MongoClient, DESCENDING
+from sentence_transformers import SentenceTransformer
+from pinecone import Pinecone, ServerlessSpec
 from dotenv import load_dotenv
 import google.generativeai as genai
-from fastapi import Query
-from pymongo import DESCENDING
 
-# ===== إعداد Logging =====
-# logging.basicConfig(
-#     level=logging.DEBUG,  # DEBUG = كل التفاصيل
-#     format="%(asctime)s [%(levelname)s] %(message)s",
-# )
-
+# =====================
+# Logging Setup
+# =====================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
 logger = logging.getLogger(__name__)
 
-# Load environment variables from .env if present
 load_dotenv()
 
-# ===== إعداد FastAPI =====
-app = FastAPI(title="🚀 NASA Papers Q&A API")
+# =====================
+# FastAPI Setup
+# =====================
+app = FastAPI(
+    title="🚀 NASA Research Papers API",
+    description="Advanced Q&A + Mindmap generation for NASA research papers",
+    version="3.0"
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "*"
-    ],  # ممكن تحدد ["http://localhost:5500"] بدل * لو بتفتح من لايف سيرفر
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ===== MongoDB =====
+# =====================
+# MongoDB Setup
+# =====================
 MONGO_URI = os.getenv("MONGO_URI")
 if not MONGO_URI:
     raise RuntimeError("MONGO_URI environment variable is not set")
-# logger.info(f"Connecting to MongoDB: {MONGO_URI}")
+
+logger.info("Connecting to MongoDB...")
 client = MongoClient(
-    MONGO_URI, tls=True, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=60000
+    MONGO_URI,
+    tls=True,
+    tlsCAFile=certifi.where(),
+    serverSelectionTimeoutMS=60000
 )
+
 db = client["nasa_papers"]
 collection = db["articles"]
+logger.info("✅ MongoDB connected")
 
-# ===== Pinecone =====
+# =====================
+# Pinecone Setup (for RAG)
+# =====================
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 if not PINECONE_API_KEY:
     raise RuntimeError("PINECONE_API_KEY environment variable is not set")
+
 INDEX_NAME = "nasa-articles-chunks"
 
-# logger.info("Connecting to Pinecone...")
+logger.info("Connecting to Pinecone...")
 pc = Pinecone(api_key=PINECONE_API_KEY)
 existing_indexes = [idx["name"] for idx in pc.list_indexes()]
-# logger.info(f"Existing Pinecone indexes: {existing_indexes}")
 
 if INDEX_NAME not in existing_indexes:
     logger.warning(f"Index {INDEX_NAME} not found. Creating it...")
@@ -65,200 +87,526 @@ if INDEX_NAME not in existing_indexes:
         metric="cosine",
         spec=ServerlessSpec(cloud="aws", region="us-east-1"),
     )
+    logger.info(f"✅ Created index {INDEX_NAME}")
+else:
+    logger.info(f"✅ Index {INDEX_NAME} already exists")
 
 index = pc.Index(INDEX_NAME)
 
-# ===== Embedding model =====
-# logger.info("Loading embedding model all-MiniLM-L6-v2...")
+# =====================
+# Embedding Model Setup
+# =====================
+logger.info("Loading embedding model...")
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+logger.info("✅ Embedding model loaded")
 
-# ===== Gemini =====
+# =====================
+# Gemini Setup
+# =====================
 GENAI_API_KEY = os.getenv("GENAI_API_KEY")
 if not GENAI_API_KEY:
     raise RuntimeError("GENAI_API_KEY environment variable is not set")
+
 genai.configure(api_key=GENAI_API_KEY)
 gemini_model = genai.GenerativeModel("gemini-2.5-flash")
+logger.info("✅ Gemini configured")
 
-
-# ===== Models =====
+# =====================
+# Pydantic Models
+# =====================
 class SearchRequest(BaseModel):
     query: str
-    top_k: int = 3
+    top_k: int = 5
 
+# =====================
+# Helper Functions
+# =====================
 
-# ===== Routes =====
-@app.get("/")
+def clean_for_mindmap(text: str, max_length: int = 80) -> str:
+    """Clean text for Mermaid mindmap syntax"""
+    if not text:
+        return "No content"
+    
+    text = str(text)
+    
+    # Remove problematic characters
+    text = text.replace('"', "'")
+    text = text.replace("\n", " ")
+    text = text.replace("\r", " ")
+    text = text.replace("\t", " ")
+    
+    # Remove special symbols
+    for char in "()[]{}/<>|\\\"'":
+        text = text.replace(char, "")
+    
+    # Clean multiple spaces
+    while "  " in text:
+        text = text.replace("  ", " ")
+    
+    text = text.strip()
+    
+    # Smart truncation
+    if len(text) > max_length:
+        text = text[:max_length].rsplit(' ', 1)[0] + "..."
+    
+    return text if text else "No content"
+
+# =====================
+# Research Extraction (for Mindmap)
+# =====================
+
+def extract_research(doc: dict) -> dict | None:
+    """Extract comprehensive research data for mindmap"""
+    prompt = f"""
+You are an expert scientific research analyst specialized in extracting structured research insights.
+
+From the article below, extract COMPREHENSIVE research-level information that would be valuable for researchers.
+Return STRICT JSON ONLY - NO MARKDOWN, NO BACKTICKS, JUST RAW JSON.
+
+Format (ALL fields required, use empty arrays/strings if no data):
+{{
+  "research_question": "Main research question or objective (1-2 sentences max)",
+  "methodology": ["Method 1", "Method 2", "Method 3"],
+  "key_findings": ["Finding 1 with specific results", "Finding 2 with numbers/results"],
+  "statistical_significance": "p-values, effect sizes, or confidence intervals if mentioned",
+  "mechanisms": ["Mechanism or pathway 1", "Mechanism or pathway 2"],
+  "implications": ["Practical implication 1", "Theoretical implication 2"],
+  "limitations": ["Limitation 1", "Limitation 2"],
+  "open_questions": ["Question 1 for future research", "Question 2"],
+  "relevant_fields": ["Field 1", "Field 2", "Field 3"],
+  "sample_details": "Sample size, population, or experimental setup"
+}}
+
+Article:
+Title: {doc.get("title","")}
+Abstract: {doc.get("abstract","")}
+Keywords: {doc.get("keywords","")}
+Introduction: {doc.get("introduction","")}
+Methods: {doc.get("methods","")}
+Results: {doc.get("results","")}
+Discussion: {doc.get("discussion","")}
+Conclusion: {doc.get("conclusion","")}
+"""
+
+    try:
+        resp = gemini_model.generate_content(prompt)
+        text = resp.text.strip()
+
+        if text.startswith("```json"):
+            text = text.replace("```json", "").replace("```", "").strip()
+        elif text.startswith("```"):
+            text = text.split("```")[1].strip()
+
+        result = json.loads(text)
+        return result
+
+    except Exception as e:
+        logger.warning("Research extraction failed: %s", e)
+        return None
+
+# =====================
+# Mindmap Builders
+# =====================
+
+def build_research_mindmap(doc: dict) -> str:
+    """Build detailed mindmap with research data"""
+    data = extract_research(doc)
+
+    if not data:
+        # Fallback to simple mindmap
+        title = clean_for_mindmap(doc.get('title', 'Untitled'), 150)
+        return f"""mindmap
+  root(({title}))
+    Abstract
+      {clean_for_mindmap(doc.get('abstract', ''), 200)}
+    Conclusion
+      {clean_for_mindmap(doc.get('conclusion', ''), 200)}
+"""
+
+    title = clean_for_mindmap(doc.get('title', 'Untitled'), 150)
+    mm = f"""mindmap
+  root(({title}))
+"""
+
+    # Research Question
+    rq = clean_for_mindmap(data.get('research_question', ''), 250)
+    if rq:
+        mm += f"""    Research Question
+      {rq}
+"""
+
+    # Methodology
+    if data.get("methodology"):
+        mm += "    Methodology\n"
+        for i, method in enumerate(data["methodology"][:4], 1):
+            method_clean = clean_for_mindmap(method, 200)
+            if method_clean:
+                mm += f"      M{i}. {method_clean}\n"
+
+    # Key Findings
+    if data.get("key_findings"):
+        mm += "    Key Findings\n"
+        for i, finding in enumerate(data["key_findings"][:5], 1):
+            finding_clean = clean_for_mindmap(finding, 220)
+            if finding_clean:
+                mm += f"      F{i}. {finding_clean}\n"
+
+    # Statistical Significance
+    sig = clean_for_mindmap(data.get("statistical_significance", ""), 200)
+    if sig:
+        mm += f"""    Statistics
+      {sig}
+"""
+
+    # Sample Details
+    sample = clean_for_mindmap(data.get("sample_details", ""), 200)
+    if sample:
+        mm += f"""    Sample Details
+      {sample}
+"""
+
+    # Mechanisms
+    if data.get("mechanisms"):
+        mm += "    Mechanisms\n"
+        for i, mechanism in enumerate(data["mechanisms"][:4], 1):
+            mech_clean = clean_for_mindmap(mechanism, 200)
+            if mech_clean:
+                mm += f"      M{i}. {mech_clean}\n"
+
+    # Implications
+    if data.get("implications"):
+        mm += "    Implications\n"
+        for i, implication in enumerate(data["implications"][:4], 1):
+            impl_clean = clean_for_mindmap(implication, 220)
+            if impl_clean:
+                mm += f"      I{i}. {impl_clean}\n"
+
+    # Limitations
+    if data.get("limitations"):
+        mm += "    Limitations\n"
+        for i, limitation in enumerate(data["limitations"][:3], 1):
+            lim_clean = clean_for_mindmap(limitation, 210)
+            if lim_clean:
+                mm += f"      L{i}. {lim_clean}\n"
+
+    # Open Questions
+    if data.get("open_questions"):
+        mm += "    Open Questions\n"
+        for i, question in enumerate(data["open_questions"][:3], 1):
+            q_clean = clean_for_mindmap(question, 220)
+            if q_clean:
+                mm += f"      Q{i}. {q_clean}\n"
+
+    # Relevant Fields
+    if data.get("relevant_fields"):
+        mm += "    Related Fields\n"
+        for field in data["relevant_fields"][:4]:
+            field_clean = clean_for_mindmap(field, 120)
+            if field_clean:
+                mm += f"      {field_clean}\n"
+
+    return mm
+
+# =====================
+# Routes - Health & Info
+# =====================
+
+@app.get("/", tags=["Health"])
 def home():
-    return {"message": "🚀 NASA Papers Q&A API running"}
+    """API Health Check"""
+    return {
+        "message": "🚀 NASA Research Papers API v3.0",
+        "status": "running",
+        "features": [
+            "Ask global questions (RAG with embeddings)",
+            "Search across all papers",
+            "Generate research mindmaps",
+            "Browse articles with pagination",
+            "AI-powered insights"
+        ]
+    }
 
+# =====================
+# Routes - Q&A (RAG-based)
+# =====================
 
-@app.post("/ask")
+@app.post("/ask", tags=["Q&A"])
 def ask_question(req: SearchRequest):
+    """
+    🎯 Ask a global question across ALL articles
+    
+    Uses semantic search + Gemini for intelligent answers
+    - query: Your research question
+    - top_k: Number of relevant chunks (default: 5)
+    """
     query = req.query
-    # logger.debug(f"Received query: {query}")
-
-    # ===== Embedding =====
-    vector = embedding_model.encode(query).tolist()
-    # logger.debug(f"Generated embedding length: {len(vector)}")
-
-    # ===== Pinecone search =====
-    results = index.query(vector=vector, top_k=req.top_k, include_metadata=True)
-    # logger.debug(f"Pinecone results: {results}")
-
-    docs = []
-    sources = []
-
-    for match in results.get("matches", []):
-        meta = match.get("metadata", {})
-        pmc_id = meta.get("pmc_id")
-        title = meta.get("title")
-        link = meta.get("link")
-
-        # logger.debug(
-        #     f"Found match: pmc_id={pmc_id}, title={title}, score={match['score']}"
-        # )
-
-        doc = collection.find_one({"pmc_id": pmc_id})
-        if doc:
-            # logger.debug(f"Document found in Mongo for {pmc_id}")
-            docs.append(
-                doc.get("abstract", "")[:1500]
-            )  # خذ abstract أو content لو عندك
-        else:
-            logger.warning(f"No Mongo document found for pmc_id={pmc_id}")
-
-        sources.append(
-            {
+    logger.info(f"❓ Question: {query}")
+    
+    if not query or len(query.strip()) < 3:
+        raise HTTPException(status_code=400, detail="Query must be at least 3 characters")
+    
+    try:
+        # Generate embedding
+        vector = embedding_model.encode(query).tolist()
+        
+        # Search Pinecone
+        results = index.query(vector=vector, top_k=req.top_k, include_metadata=True)
+        
+        docs = []
+        sources = []
+        
+        for match in results.get("matches", []):
+            meta = match.get("metadata", {})
+            pmc_id = meta.get("pmc_id")
+            title = meta.get("title")
+            section = meta.get("section")
+            score = match['score']
+            
+            doc = collection.find_one({"pmc_id": pmc_id})
+            if doc:
+                section_content = ""
+                if section and section in doc:
+                    section_content = str(doc.get(section, ""))[:1500]
+                
+                if not section_content:
+                    section_content = doc.get("abstract", "")[:1500]
+                
+                if section_content:
+                    docs.append(section_content)
+            
+            sources.append({
                 "pmc_id": pmc_id,
                 "title": title,
-                "link": link,
-                "section": meta.get("section"),
-            }
-        )
-
-    if not docs:
-        logger.error("No documents found after matching")
-        raise HTTPException(status_code=404, detail="No documents found")
-
-    # ===== Context =====
-    context_text = "\n\n".join(docs)
-    # logger.debug(f"Context text length: {len(context_text)}")
-
-    # ===== Send to Gemini =====
-    prompt = f"""Answer the following question using the context below. 
-If you don’t know, just say you don’t know.
+                "section": section,
+                "relevance_score": round(score, 3)
+            })
+        
+        if not docs:
+            raise HTTPException(status_code=404, detail="No relevant documents found")
+        
+        # Build context
+        context_text = "\n\n".join(docs)
+        
+        # Generate answer with Gemini
+        prompt = f"""You are a helpful scientific research assistant. Answer the following question 
+using the provided research context. Be accurate and concise.
 
 Context:
 {context_text}
 
 Question: {query}
+
 Answer:"""
+        
+        response = gemini_model.generate_content(prompt)
+        answer_text = response.text if hasattr(response, "text") else str(response)
+        
+        logger.info(f"✅ Answer generated")
+        
+        return {
+            "status": "success",
+            "query": query,
+            "answer": answer_text,
+            "sources": sources,
+            "source_count": len(sources)
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-    response = gemini_model.generate_content(prompt)
-    answer_text = response.text if hasattr(response, "text") else str(response)
-    # logger.debug(f"Gemini response: {answer_text[:300]}...")  # عرض أول 300 حرف بس
+# =====================
+# Routes - Articles Management
+# =====================
 
-    return {"query": query, "answer": answer_text, "sources": sources}
-
-
-@app.get("/articles/{pmc_id}")
-def get_article_by_id(pmc_id: str):
-    # logger.debug(f"Fetching article with pmc_id={pmc_id}")
-
-    # لو عايز تدور بالـ pmc_id (string field عندك في الكولكشن)
-    doc = collection.find_one({"pmc_id": pmc_id})
-
-    # أو لو عايز تدور بالـ _id بتاع مونجو نفسه
-    # try:
-    #     obj_id = ObjectId(pmc_id)
-    #     doc = collection.find_one({"_id": obj_id})
-    # except Exception:
-    #     raise HTTPException(status_code=400, detail="Invalid ObjectId format")
-
-    if not doc:
-        logger.warning(f"No article found for pmc_id={pmc_id}")
-        raise HTTPException(status_code=403, detail="Article not found")
-
-    # تحويل ObjectId عشان يتسيريالاين كويس
-    doc["_id"] = str(doc["_id"])
-    return doc
-
-
-@app.get("/articles")
-def get_all_articles(page: int = Query(1, ge=1), limit: int = Query(10, ge=1, le=100)):
-    # logger.debug(f"Fetching articles page={page}, limit={limit}")
-
-    skip = (page - 1) * limit
-
-    cursor = (
-        collection.find(
+@app.get("/articles", tags=["Browse"])
+def list_articles(
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=100),
+):
+    """Get paginated list of all articles"""
+    try:
+        skip = (page - 1) * limit
+        total = collection.count_documents({})
+        articles = list(collection.find(
             {},
-            {"pmc_id": 1, "summary": 1, "title": 1, "published_date": 1, "authors": 1},
-        )
-        .sort("published_date", DESCENDING)
-        .skip(skip)
-        .limit(limit)
-    )
-
-    articles = []
-    for doc in cursor:
-        articles.append(
             {
-                "pmc_id": str(doc["pmc_id"]),
-                "summary": doc.get("summary", ""),
-                "title": doc.get("title", ""),
-                "published_date": doc.get("published_date", ""),
-                "publisher": doc.get("authors", [None])[0],  # أول author
+                "pmc_id": 1,
+                "title": 1,
+                "abstract": 1,
+                "published_date": 1,
+                "_id": 0
             }
-        )
+        ).skip(skip).limit(limit).sort("published_date", DESCENDING))
+        
+        return {
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "pages": (total + limit - 1) // limit
+            },
+            "articles": articles
+        }
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        raise HTTPException(500, "Failed to list articles")
 
-    total_count = collection.count_documents({})
-    total_pages = (total_count + limit - 1) // limit
+@app.get("/search", tags=["Browse"])
+def search_articles(
+    q: str = Query(..., min_length=1),
+    field: str = Query("title", enum=["title", "abstract", "keywords"]),
+    limit: int = Query(10, ge=1, le=50),
+):
+    """Search articles by keyword"""
+    try:
+        search_query = {field: {"$regex": q, "$options": "i"}}
+        
+        results = list(collection.find(
+            search_query,
+            {
+                "pmc_id": 1,
+                "title": 1,
+                "abstract": 1,
+                "_id": 0
+            }
+        ).limit(limit))
+        
+        return {
+            "query": q,
+            "field": field,
+            "count": len(results),
+            "results": results
+        }
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        raise HTTPException(500, "Search failed")
 
-    return {
-        "page": page,
-        "limit": limit,
-        "total_pages": total_pages,
-        "total_count": total_count,
-        "articles": articles,
-    }
+@app.get("/articles/{pmc_id}", tags=["Browse"])
+def get_article(pmc_id: str):
+    """Get full article details"""
+    try:
+        doc = collection.find_one({"pmc_id": pmc_id})
+        if not doc:
+            raise HTTPException(404, "Article not found")
+        
+        doc.pop("_id", None)
+        return {"status": "success", "article": doc}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        raise HTTPException(500, "Failed to get article")
 
+# =====================
+# Routes - Visualization (Mindmaps)
+# =====================
 
-def build_article_mindmap(doc):
-    title = doc.get("title", "Untitled")
-    publisher = doc.get("authors", ["Unknown"])[0]
-
-    mindmap = f"""mindmap
-  root(("{title}"))
-    Publisher "{publisher}"
-    Introduction "{doc.get("introduction", "")[:80]}..."
-    Methods "{doc.get("methods", "")[:80]}..."
-    Results "{doc.get("results", "")[:80]}..."
-    Discussion "{doc.get("discussion", "")[:80]}..."
-    Conclusion "{doc.get("conclusion", "")[:80]}..."
-    Significant "{doc.get("significant", "")[:80]}..."
-    Summary "{doc.get("summary", "")[:80]}..."
-    Figures
+@app.get("/articles/{pmc_id}/mindmap", tags=["Visualization"])
+def get_article_mindmap(
+    pmc_id: str,
+    mode: str = Query("research", enum=["overview", "research"]),
+):
+    """
+    🧠 Generate mindmap for article
+    
+    Modes:
+    - overview: Simple abstract + conclusion
+    - research: Detailed research breakdown
+    """
+    try:
+        doc = collection.find_one({"pmc_id": pmc_id})
+        if not doc:
+            raise HTTPException(404, "Article not found")
+        
+        if mode == "research":
+            mindmap = build_research_mindmap(doc)
+        else:
+            # Simple overview
+            title = clean_for_mindmap(doc.get('title', 'Untitled'), 150)
+            abstract = clean_for_mindmap(doc.get('abstract', ''), 300)
+            conclusion = clean_for_mindmap(doc.get('conclusion', ''), 300)
+            
+            mindmap = f"""mindmap
+  root(({title}))
+    Abstract
+      {abstract}
+    Conclusion
+      {conclusion}
 """
-    for i, fig in enumerate(doc.get("figures", []), 1):
-        mindmap += f'      "Figure {i}: {fig.get("text","")[:60]}..."\n'
+        
+        return {
+            "status": "success",
+            "pmc_id": pmc_id,
+            "mode": mode,
+            "mindmap": mindmap
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        raise HTTPException(500, "Failed to generate mindmap")
 
-    mindmap += "    Tables\n"
-    for i, tbl in enumerate(doc.get("tables", []), 1):
-        mindmap += f'      "Table {i}: {tbl.get("text","")[:60]}..."\n'
+@app.get("/articles/{pmc_id}/research-data", tags=["Visualization"])
+def get_research_data(pmc_id: str):
+    """Get structured research data"""
+    try:
+        doc = collection.find_one({"pmc_id": pmc_id})
+        if not doc:
+            raise HTTPException(404, "Article not found")
+        
+        data = extract_research(doc)
+        if not data:
+            raise HTTPException(500, "Failed to extract research data")
+        
+        return {
+            "status": "success",
+            "pmc_id": pmc_id,
+            "title": doc.get("title"),
+            "research_data": data
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        raise HTTPException(500, "Failed to get research data")
 
-    return mindmap
+# =====================
+# Routes - Info
+# =====================
 
+@app.get("/stats", tags=["Info"])
+def get_stats():
+    """Get system statistics"""
+    try:
+        total_articles = collection.count_documents({})
+        
+        return {
+            "status": "success",
+            "statistics": {
+                "total_articles": total_articles,
+                "embedding_model": "all-MiniLM-L6-v2",
+                "llm": "Gemini 2.5 Flash",
+                "vector_db": "Pinecone",
+                "api_version": "3.0",
+                "features": [
+                    "RAG-based Q&A",
+                    "Research mindmaps",
+                    "Article search",
+                    "Semantic search"
+                ]
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        raise HTTPException(500, "Failed to get stats")
 
-@app.get("/articles/{pmc_id}/mindmap")
-def get_article_mindmap(pmc_id: str):
-    doc = collection.find_one({"pmc_id": pmc_id})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Article not found")
-    return {"mindmap": build_article_mindmap(doc)}
-
-
-# if __name__ == "__main__":
-#     import uvicorn
-
-#     uvicorn.run(host="0.0.0.0", port=8000)
+# =====================
+# Run
+# =====================
+if __name__ == "__main__":
+    import uvicorn
+    logger.info("🚀 Starting NASA Research Papers API v3.0...")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
