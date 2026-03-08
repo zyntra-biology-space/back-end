@@ -96,9 +96,14 @@ index = pc.Index(INDEX_NAME)
 # =====================
 # Embedding Model Setup
 # =====================
-logger.info("Loading embedding model...")
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-logger.info("✅ Embedding model loaded")
+embedding_model = None
+
+@app.on_event("startup")
+def load_model():
+    global embedding_model
+    logger.info("Loading embedding model...")
+    embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+    logger.info("Embedding model ready")
 
 # =====================
 # Gemini Setup
